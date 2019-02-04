@@ -1,65 +1,81 @@
-# Copyright (C) 2018 The python-bitcoin-utils developers
+
+"""Low-level example of how to spend a P2SH/BIP16 txout"""
+
+import sys
+if sys.version_info.major < 3:
+    sys.stderr.write('Sorry, Python 3.x required by this example.\n')
+    sys.exit(1)
+
+import hashlib
+
+from bitcoin import SelectParams
+from bitcoin.core import b2x, lx, COIN, COutPoint, CMutableTxOut, CMutableTxIn, CMutableTransaction, Hash160
+from bitcoin.core.script import CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SignatureHash, SIGHASH_ALL
+from bitcoin.core.scripteval import VerifyScript, SCRIPT_VERIFY_P2SH
+from bitcoin.wallet import CBitcoinAddress, CBitcoinSecret
+
+SelectParams('mainnet')
+
+# Create the (in)famous correct brainwallet secret key.
+h = hashlib.sha256(b'correct horse battery staple').digest()
+seckey = CBitcoinSecret.from_secret_bytes(h)
+
+# Create a redeemScript. Similar to a scriptPubKey the redeemScript must be
+# satisfied for the funds to be spent.
+txin_redeemScript = CScript([seckey.pub, OP_CHECKSIG])
+print(b2x(txin_redeemScript))
+
+# Create the magic P2SH scriptPubKey format from that redeemScript. You should
+# look at the CScript.to_p2sh_scriptPubKey() function in bitcoin.core.script to
+# understand what's happening, as well as read BIP16:
+# https://github.com/bitcoin/bips/blob/master/bip-0016.mediawiki
+txin_scriptPubKey = txin_redeemScript.to_p2sh_scriptPubKey()
+
+# Convert the P2SH scriptPubKey to a base58 Bitcoin address and print it.
+# You'll need to send some funds to it to create a txout to spend.
+txin_p2sh_address = CBitcoinAddress.from_scriptPubKey(txin_scriptPubKey)
+print('Pay to:',str(txin_p2sh_address))
+
+# Same as the txid:vout the createrawtransaction RPC call requires
 #
-# This file is part of python-bitcoin-utils
-#
-# It is subject to the license terms in the LICENSE file found in the top-level
-# directory of this distribution.
-#
-# No part of python-bitcoin-utils, including this file, may be copied,
-# modified,
-# propagated, or distributed except according to the terms contained in the
-# LICENSE file.
+# lx() takes *little-endian* hex and converts it to bytes; in Bitcoin
+# transaction hashes are shown little-endian rather than the usual big-endian.
+# There's also a corresponding x() convenience function that takes big-endian
+# hex and converts it to bytes.
+txid = lx('bff785da9f8169f49be92fa95e31f0890c385bfb1bd24d6b94d7900057c617ae')
+vout = 0
 
-from bitcoinutils.setup import setup
-from bitcoinutils.transactions import Transaction, TxInput, TxOutput
-from bitcoinutils.keys import P2pkhAddress, P2shAddress, PrivateKey
-from bitcoinutils.script import Script
+# Create the txin structure, which includes the outpoint. The scriptSig
+# defaults to being empty.
+txin = CMutableTxIn(COutPoint(txid, vout))
 
-def main():
-    # always remember to setup the network
-    setup('testnet')
+# Create the txout. This time we create the scriptPubKey from a Bitcoin
+# address.
+txout = CMutableTxOut(0.0005*COIN, CBitcoinAddress('323uf9MgLaSn9T7vDaK1cGAZ2qpvYUuqSp').to_scriptPubKey())
 
-    #
-    # This script spends from a P2SH address containing a P2PK script
-    #
+# Create the unsigned transaction.
+tx = CMutableTransaction([txin], [txout])
 
-    # create transaction input from tx id of UTXO (contained 0.1 tBTC)
-    txin = TxInput('7db363d5a7fabb64ccce154e906588f1936f34481223ea8c1f2c935b0a0c945b', 0)
+# Calculate the signature hash for that transaction. Note how the script we use
+# is the redeemScript, not the scriptPubKey. That's because when the CHECKSIG
+# operation happens EvalScript() will be evaluating the redeemScript, so the
+# corresponding SignatureHash() function will use that same script when it
+# replaces the scriptSig in the transaction being hashed with the script being
+# executed.
+sighash = SignatureHash(txin_redeemScript, tx, 0, SIGHASH_ALL)
 
-    # secret key needed to spend P2PK that is wrapped by P2SH
-    p2pk_sk = PrivateKey('cRvyLwCPLU88jsyj94L7iJjQX5C2f8koG4G2gevN4BeSGcEvfKe9')
-    p2pk_pk = p2pk_sk.get_public_key().to_hex()
-    # create the redeem script - needed to sign the transaction
-    redeem_script = Script([p2pk_pk, 'OP_CHECKSIG'])
+# Now sign it. We have to append the type of signature we want to the end, in
+# this case the usual SIGHASH_ALL.
+sig = seckey.sign(sighash) + bytes([SIGHASH_ALL])
 
-    #TODELETE
-    #txin_script_pub_key = redeem_script.to_p2sh_script_pub_key()
+# Set the scriptSig of our transaction input appropriately.
+txin.scriptSig = CScript([sig, txin_redeemScript])
 
-    to_addr = P2pkhAddress('n4bkvTyU1dVdzsrhWBqBw8fEMbHjJvtmJR')
-    txout = TxOutput( 0.08, to_addr.to_script_pub_key() )
+# Verify the signature worked. This calls EvalScript() and actually executes
+# the opcodes in the scripts to see if everything worked out. If it doesn't an
+# exception will be raised.
+VerifyScript(txin.scriptSig, txin_scriptPubKey, tx, 0, (SCRIPT_VERIFY_P2SH,))
 
-    # no change address - the remaining 0.01 tBTC will go to miners)
-
-    # create transaction from inputs/outputs -- default locktime is used
-    tx = Transaction([txin], [txout])
-
-    # print raw transaction
-    print("\nRaw unsigned transaction:\n" + tx.serialize())
-
-    # use the private key corresponding to the address that contains the
-    # UTXO we are trying to spend to create the signature for the txin -
-    # note that the redeem script is passed to replace the scriptSig
-    sig = p2pk_sk.sign_input(tx, 0, redeem_script )
-    #print(sig)
-
-    # set the scriptSig (unlocking script)
-    txin.script_sig = Script([sig, redeem_script.to_hex()])
-    signed_tx = tx.serialize()
-
-    # print raw signed transaction ready to be broadcasted
-    print("\nRaw signed transaction:\n" + signed_tx)
-    print("\nTxId:", tx.get_txid())
-
-
-if __name__ == "__main__":
-    main()
+# Done! Print the transaction to standard output with the bytes-to-hex
+# function.
+print(b2x(tx.serialize()))
