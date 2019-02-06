@@ -1,14 +1,18 @@
+
+#
+# This script spends funds from a timelock script address.
+#
+
 import sys
 if sys.version_info.major < 3:
     sys.stderr.write('Please use Python 3.x to run this.\n')
     sys.exit(1)
 
-import hashlib
 import bitcoin.rpc
 
 from bitcoin import SelectParams
 from bitcoin.core import b2x, lx, COIN, COutPoint, CMutableTxOut, CMutableTxIn, CMutableTransaction, Hash160
-from bitcoin.core.script import CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SignatureHash, SIGHASH_ALL, OP_DROP, OP_NOP3
+from bitcoin.core.script import CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SIGHASH_ALL, OP_DROP, OP_NOP3
 from bitcoin.core.scripteval import VerifyScript, SCRIPT_VERIFY_P2SH
 from bitcoin.wallet import CBitcoinAddress, CBitcoinSecret
 
@@ -21,15 +25,12 @@ privKeySender = 'cVS929EhDuLUemssFz5N8BpuJZf6NpSdWmsENBBHUZyzMQLbYLmH'
 addressReceiver = '2Myk6MB7DTEzuPC17v1voy5U8snwSULALyr'
 
 secret = CBitcoinSecret(privKeySender)
-redeem_script = CScript([secret.pub, OP_CHECKSIG])
-#redeem_script = CScript([0xc800, OP_CHECKSEQUENCEVERIFY, OP_DROP, OP_DUP, OP_HASH160, Hash160(secret.pub), OP_EQUALVERIFY, OP_CHECKSIG])
-
-print("public key: " + str(Hash160(secret.pub)))
-print('redeem script: ' + b2x(redeem_script))
+#redeem_script = CScript([secret.pub, OP_CHECKSIG])
+redeem_script = CScript([0xc800, OP_CHECKSEQUENCEVERIFY, OP_DROP, OP_DUP, OP_HASH160, Hash160(secret.pub), OP_EQUALVERIFY, OP_CHECKSIG])
 
 txin_scriptPubKey = redeem_script.to_p2sh_scriptPubKey()
 txin_p2sh_address = CBitcoinAddress.from_scriptPubKey(txin_scriptPubKey)
-print('Pay to:', str(txin_p2sh_address))
+# print('Pay to:', str(txin_p2sh_address))
 
 # start intermission
 proxy = bitcoin.rpc.Proxy()
@@ -37,28 +38,35 @@ proxy = bitcoin.rpc.Proxy()
 #print('transaction: ' + str(transaction))
 # end intermission
 
-txins = []
-VOUT = 0    # always use the transaction's first output
-totalUnspentAmount = 0
-for transaction in proxy.call("listtransactions"):
-    if (transaction['address'] == str(txin_p2sh_address)):
+# find the set of UTXO transactions that have been sent to the script address
+txins = []  # inputs to the spending transaction we will create
+            # We populate this array using unspent transaction outputs that have been sent to the script address
+totalUnspentAmount = 0  # total of amounts sent to the script address which are still unspent
+VOUT = 0    # always use the incoming transaction's first output
+for transaction in proxy.call("listtransactions"):  # query the local node to find the list of recent transactions. 
+                                                    # listtransactions defaults to retrieve the 10 most recent transactions
+    # now that we have the 10 most recent transactions, we test to see if they go with the script address and are spendable
+    if (transaction['address'] == str(txin_p2sh_address)):  # if current transaction is to send coins to the script address
+        # create a CMutableTxIn object so that we can test whether it's spendable
         txid = lx(transaction['txid'])  # lx() takes *little-endian* hex and converts it to bytes
-        txin = CMutableTxIn(COutPoint(txid, VOUT))
-        #txin = CMutableTxIn(COutPoint(txid, VOUT), nSequence=0xc800007f)
+        #txin = CMutableTxIn(COutPoint(txid, VOUT))
+        txin = CMutableTxIn(COutPoint(txid, VOUT), nSequence=0xc800007f)
         try:
             # test to see if this transaction is spendable
+            # throws an IndexError error if it's not
             proxy.gettxout(txin.prevout)    
         except IndexError:
             # if transaction is not spendable, ignore it
-            #print("transaction " + transaction['txid'] + " not spendable")
             continue
         else:
             # if transaction is spendable, add it to our array
             txins.append(txin)
+            # and update the total amount available to us to spent
+            # transaction amounts sent to script address are negative because they are debits against sender account
+            # multiply by -1 to make them positive
+            # then add to total
             totalUnspentAmount += (transaction['amount'] * -1)
-            #print('transaction id: ' + transaction['txid'])
-print ('End unspent. Total amount: ' + str(totalUnspentAmount))
-assert (totalUnspentAmount > 0), 'No funds available to spend'
+assert (totalUnspentAmount > 0), 'Funds must be available to spend' # if script address has no UTXOs, throw an error and exit
 
 #FEE_PER_BYTE = 0.00025*COIN/1000    #todo: use estimatesmartfee function instead
 #mining_fee = len(txins.serialize()) * FEE_PER_BYTE
@@ -70,9 +78,7 @@ txout = CMutableTxOut(output_amt*COIN, CBitcoinAddress(addressReceiver).to_scrip
 
 # Create the unsigned transaction.
 tx = CMutableTransaction(txins, [txout])
-
-print("raw unsigned transaction: " + b2x(tx.serialize()))
-
+#print("raw unsigned transaction: " + b2x(tx.serialize()))
 
 for index, txin in enumerate(txins):
     # Calculate the signature hash for that transaction. Note how the script we use
@@ -99,8 +105,4 @@ for index, txin in enumerate(txins):
 print('transaction: ' + b2x(tx.serialize()))
 
 #actually execute the transaction
-#delete this later
-proxy.sendrawtransaction(tx)
-
-
-
+#proxy.sendrawtransaction(tx)
