@@ -3,7 +3,19 @@ Python script to create and spend a time-locked bitcoin script address.
 
 Assignment for COMP-541 February 2019.
 
-Requirements:
+send_to_p2sh_timelock.py creates a P2SH address containing a timelock script. All funds sent to the address will be locked for 200 blocks.
+Run it with:
+  python3 send_to_p2sh_timelock.py [private key]
+where [private key] is the private key for the P2PKH part of the redeem script. It should be in quotes.
+
+spend_p2sh_timelock.py spends funds from the time-locked address.
+Run it with:
+  python3 spend_p2sh_timelock.py [private key] [receiver address]
+where [private key] is the same private key as was used in the first script, and [receiver address] is a P2PKH address to send the funds to. Both should be in quotes.
+
+Peter Todd's bitcoin library is used extensively, make sure it's installed. (https://github.com/petertodd/python-bitcoinlib)
+
+Assignment description:
 
 Using the programming language of your choice implement two programs/scripts. The first one will create an address where all funds sent to it should be locked for N time after its creation; other than the time locking the redeem script should be equivalent to P2PKH. The second program will allow someone to spent funds from this address.
 Both programs should:
