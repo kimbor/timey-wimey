@@ -33,55 +33,66 @@ print('Pay to:', str(txin_p2sh_address))
 
 # start intermission
 proxy = bitcoin.rpc.Proxy()
-transaction = proxy.sendtoaddress(str(txin_p2sh_address), 0.001*COIN)
-print('transaction: ' + str(transaction))
+#transaction = proxy.sendtoaddress(str(txin_p2sh_address), 0.0001*COIN)
+#print('transaction: ' + str(transaction))
 # end intermission
 
-print ('Unspent transactions:')
-
 txins = []
-vout = 0
+VOUT = 0    # always use the transaction's first output
+totalUnspentAmount = 0
 for transaction in proxy.call("listtransactions"):
     if (transaction['address'] == str(txin_p2sh_address)):
-        print('transaction: ' + transaction['txid'])
-        # lx() takes *little-endian* hex and converts it to bytes; in Bitcoin
-        # transaction hashes are shown little-endian rather than the usual big-endian.
-        txid = lx(transaction['txid'])
-        txins.append(CMutableTxIn(COutPoint(txid, vout)))
-print ('End unspent')
+        txid = lx(transaction['txid'])  # lx() takes *little-endian* hex and converts it to bytes
+        txin = CMutableTxIn(COutPoint(txid, VOUT))
+        #txin = CMutableTxIn(COutPoint(txid, VOUT), nSequence=0xc800007f)
+        try:
+            # test to see if this transaction is spendable
+            proxy.gettxout(txin.prevout)    
+        except IndexError:
+            # if transaction is not spendable, ignore it
+            #print("transaction " + transaction['txid'] + " not spendable")
+            continue
+        else:
+            # if transaction is spendable, add it to our array
+            txins.append(txin)
+            totalUnspentAmount += (transaction['amount'] * -1)
+            #print('transaction id: ' + transaction['txid'])
+print ('End unspent. Total amount: ' + str(totalUnspentAmount))
+assert (totalUnspentAmount > 0), 'No funds available to spend'
 
-
-#vout = 0
-
-# Create the txin structure, which includes the outpoint. The scriptSig defaults to being empty.
-txin = CMutableTxIn(COutPoint(txid, vout))
-#txin = CMutableTxIn(COutPoint(txid, vout), nSequence=0xc800007f)
+#FEE_PER_BYTE = 0.00025*COIN/1000    #todo: use estimatesmartfee function instead
+#mining_fee = len(txins.serialize()) * FEE_PER_BYTE
+mining_fee = 0.00000350
+output_amt = float(totalUnspentAmount) - mining_fee
 
 # Create the txout. This time we create the scriptPubKey from a Bitcoin address.
-txout = CMutableTxOut(0.0001*COIN, CBitcoinAddress(addressReceiver).to_scriptPubKey())
+txout = CMutableTxOut(output_amt*COIN, CBitcoinAddress(addressReceiver).to_scriptPubKey()) #todo: verify whether this is spendable
 
 # Create the unsigned transaction.
-tx = CMutableTransaction([txin], [txout])
+tx = CMutableTransaction(txins, [txout])
 
-# Calculate the signature hash for that transaction. Note how the script we use
-# is the redeemScript, not the scriptPubKey. That's because when the CHECKSIG
-# operation happens EvalScript() will be evaluating the redeemScript, so the
-# corresponding SignatureHash() function will use that same script when it
-# replaces the scriptSig in the transaction being hashed with the script being
-# executed.
-sighash = SignatureHash(redeem_script, tx, 0, SIGHASH_ALL)
+print("raw unsigned transaction: " + b2x(tx.serialize()))
 
-# Now sign it. We have to append the type of signature we want to the end, in
-# this case the usual SIGHASH_ALL.
-sig = secret.sign(sighash) + bytes([SIGHASH_ALL])
 
-# Set the scriptSig of our transaction input appropriately.
-txin.scriptSig = CScript([sig, redeem_script])
+for index, txin in enumerate(txins):
+    # Calculate the signature hash for that transaction. Note how the script we use
+    # is the redeemScript, not the scriptPubKey. That's because when the CHECKSIG
+    # operation happens EvalScript() will be evaluating the redeemScript, so the
+    # corresponding SignatureHash() function will use that same script when it
+    # replaces the scriptSig in the transaction being hashed with the script being
+    # executed.
+    sighash = SignatureHash(redeem_script, tx, index, SIGHASH_ALL)
 
-# Verify the signature worked. This calls EvalScript() and actually executes
-# the opcodes in the scripts to see if everything worked out. If it doesn't an
-# exception will be raised.
-VerifyScript(txin.scriptSig, txin_scriptPubKey, tx, 0, (SCRIPT_VERIFY_P2SH,))
+    # Now sign it. We have to append the type of signature we want to the end, in
+    # this case the usual SIGHASH_ALL.
+    sig = secret.sign(sighash) + bytes([SIGHASH_ALL])
+
+    # Set the scriptSig of our transaction input appropriately.
+    txin.scriptSig = CScript([sig, redeem_script])
+    # Verify the signature worked. This calls EvalScript() and actually executes
+    # the opcodes in the scripts to see if everything worked out. If it doesn't an
+    # exception will be raised.
+    VerifyScript(txin.scriptSig, txin_scriptPubKey, tx, index, (SCRIPT_VERIFY_P2SH,))
 
 # Done! Print the transaction to standard output with the bytes-to-hex
 # function.
