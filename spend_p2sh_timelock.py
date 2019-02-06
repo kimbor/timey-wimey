@@ -8,9 +8,11 @@ import bitcoin.rpc
 
 from bitcoin import SelectParams
 from bitcoin.core import b2x, lx, COIN, COutPoint, CMutableTxOut, CMutableTxIn, CMutableTransaction, Hash160
-from bitcoin.core.script import CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SignatureHash, SIGHASH_ALL
+from bitcoin.core.script import CScript, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, SignatureHash, SIGHASH_ALL, OP_DROP, OP_NOP3
 from bitcoin.core.scripteval import VerifyScript, SCRIPT_VERIFY_P2SH
 from bitcoin.wallet import CBitcoinAddress, CBitcoinSecret
+
+OP_CHECKSEQUENCEVERIFY = OP_NOP3    #unlike other op-codes, python-bitcoinlib doesn't define OP_CHECKSEQUENCEVERIFY, so I define it myself here
 
 SelectParams('testnet')  # CHANGE THIS TO regtest
 
@@ -20,9 +22,9 @@ addressReceiver = '2Myk6MB7DTEzuPC17v1voy5U8snwSULALyr'
 
 secret = CBitcoinSecret(privKeySender)
 redeem_script = CScript([secret.pub, OP_CHECKSIG])
-#redeem_script = CScript([OP_DUP, OP_HASH160, secret.pub, OP_EQUALVERIFY, OP_CHECKSIG])
+#redeem_script = CScript([0xc800, OP_CHECKSEQUENCEVERIFY, OP_DROP, OP_DUP, OP_HASH160, Hash160(secret.pub), OP_EQUALVERIFY, OP_CHECKSIG])
 
-print("public key: " + str(secret.pub))
+print("public key: " + str(Hash160(secret.pub)))
 print('redeem script: ' + b2x(redeem_script))
 
 txin_scriptPubKey = redeem_script.to_p2sh_scriptPubKey()
@@ -36,16 +38,20 @@ print('transaction: ' + str(transaction))
 # end intermission
 
 print ('Unspent transactions:')
+
+txins = []
+vout = 0
 for transaction in proxy.call("listtransactions"):
     if (transaction['address'] == str(txin_p2sh_address)):
         print('transaction: ' + transaction['txid'])
         # lx() takes *little-endian* hex and converts it to bytes; in Bitcoin
         # transaction hashes are shown little-endian rather than the usual big-endian.
         txid = lx(transaction['txid'])
+        txins.append(CMutableTxIn(COutPoint(txid, vout)))
 print ('End unspent')
 
 
-vout = 0
+#vout = 0
 
 # Create the txin structure, which includes the outpoint. The scriptSig defaults to being empty.
 txin = CMutableTxIn(COutPoint(txid, vout))
@@ -56,7 +62,6 @@ txout = CMutableTxOut(0.0001*COIN, CBitcoinAddress(addressReceiver).to_scriptPub
 
 # Create the unsigned transaction.
 tx = CMutableTransaction([txin], [txout])
-print('tx: ' + str(tx))
 
 # Calculate the signature hash for that transaction. Note how the script we use
 # is the redeemScript, not the scriptPubKey. That's because when the CHECKSIG
